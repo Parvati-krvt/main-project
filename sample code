@@ -1,0 +1,72 @@
+import torch
+import torch.nn as nn
+import onnx
+from torchvision.models.video import mc3_18
+import tensorflow as tf
+from onnx2keras import onnx_to_keras
+import hls4ml
+import os
+
+# Step 1: Simplified MC3 Model
+class SimplifiedMC3(nn.Module):
+    def __init__(self):
+        super(SimplifiedMC3, self).__init__()
+        base_model = mc3_18(pretrained=True)
+        self.features = nn.Sequential(*list(base_model.children())[:3])  # Extract first 3 layers
+
+    def forward(self, x):
+        return self.features(x)
+
+
+def main():
+    # Ensure that the directory for models exists
+    if not os.path.exists("./models"):
+        os.makedirs("./models")
+
+    # Step 1: Save simplified PyTorch model
+    simplified_model = SimplifiedMC3()
+    model_path = "./models/simplified_mc3_18.pth"
+    torch.save(simplified_model.state_dict(), model_path)
+    print(f"Simplified model saved as {model_path}")
+
+    # Step 2: Convert PyTorch to ONNX
+    onnx_path = "./models/simplified_mc3_18.onnx"
+    dummy_input = torch.randn(1, 3, 16, 112, 112)  # Adjust input shape
+    torch.onnx.export(
+        simplified_model,
+        dummy_input,
+        onnx_path,
+        export_params=True,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch_size"}, "output": {0: "batch_size"}},
+        opset_version=11,
+    )
+    print(f"Model converted to ONNX format and saved as {onnx_path}")
+
+    # Step 3: Convert ONNX to Keras
+    onnx_model = onnx.load(onnx_path)
+    keras_model = onnx_to_keras(onnx_model, ["input"])
+    keras_path = "./models/simplified_mc3_18.h5"
+    keras_model.save(keras_path)
+    print(f"Model converted to Keras format and saved as {keras_path}")
+
+    # Step 4: Convert Keras Model to HLS
+    # Provide the path to the saved Keras model
+    config = hls4ml.utils.config_from_keras_model(keras_model, granularity="name")
+    hls_project = hls4ml.converters.convert_from_keras_model(
+        keras_model, hls_config=config, output_dir="./hls_project", part="xcu250-figd2104-2L-e"
+    )
+    print("HLS Project configuration created.")
+
+    # Compile HLS project
+    hls_project.compile()
+    print("HLS project compiled successfully.")
+
+    # Save HLS files
+    hls_summary = hls_project.build(csim=False, synth=True)
+    print("HLS project summary:", hls_summary)
+
+
+if __name__ == "__main__":
+    main()
